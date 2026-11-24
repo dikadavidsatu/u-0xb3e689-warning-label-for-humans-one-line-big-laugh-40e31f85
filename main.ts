@@ -57,7 +57,7 @@
  * input. Two runs write byte-identical files and print byte-identical reports.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -112,15 +112,24 @@ function hasNoEdgeWhitespace(text: string): boolean {
 /**
  * Plain printable ASCII only. A warning label is printed matter; anything
  * outside the printable range is a surprise the judge did not ask for.
+ * Returns the first offending character and its position, so a failing
+ * line says exactly what to fix instead of only that it failed.
  */
-function isPrintableAscii(text: string): boolean {
+function firstNonPrintableAscii(text: string): { ch: string; at: number } | null {
+  let at = 0;
   for (const ch of text) {
     const code = ch.codePointAt(0) ?? 0;
     if (code < 0x20 || code > 0x7e) {
-      return false;
+      return { ch, at };
     }
+    at += 1;
   }
-  return true;
+  return null;
+}
+
+/** True when the text is plain printable ASCII, code point by code point. */
+function isPrintableAscii(text: string): boolean {
+  return firstNonPrintableAscii(text) === null;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +176,11 @@ function checkGate(text: string): GateResult {
     violations.push("entry must not have leading or trailing whitespace");
   }
 
-  if (!isPrintableAscii(text)) {
-    violations.push("entry must be plain printable ASCII");
+  const badChar = firstNonPrintableAscii(text);
+  if (badChar !== null) {
+    violations.push(
+      `entry must be plain printable ASCII (found ${JSON.stringify(badChar.ch)} at character ${badChar.at})`,
+    );
   }
 
   if (!text.startsWith(`${LABEL_PREFIX} `)) {
@@ -214,6 +226,9 @@ function resolveOutputDir(): string {
  * Write the line to <dir>/entry.txt and read it back, so the file the judge
  * reads is verified byte for byte before the program reports success.
  * The file holds exactly the line: no trailing newline, no extra bytes.
+ * Besides the text round-trip, the byte size on disk must match the line's
+ * byte count, which catches a trailing newline or encoding surprise that a
+ * plain string comparison could miss.
  */
 function writeEntry(dir: string, text: string): string {
   mkdirSync(dir, { recursive: true });
@@ -223,6 +238,12 @@ function writeEntry(dir: string, text: string): string {
   const roundTrip = readFileSync(path, "utf8");
   if (roundTrip !== text) {
     throw new Error(`wrote ${path} but read back a different text`);
+  }
+  const { size } = statSync(path);
+  if (size !== byteCount(text)) {
+    throw new Error(
+      `wrote ${path} but its size is ${size} bytes, expected ${byteCount(text)}`,
+    );
   }
   return path;
 }
